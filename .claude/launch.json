@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "reel-transcriber",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start", "--prefix", "D:\\Claudio\\reel-transcriber"],
+      "port": 5050
+    }
+  ]
+}
