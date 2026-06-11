@@ -1,3 +1,13 @@
+---
+title: CreatorKit
+emoji: 🎬
+colorFrom: purple
+colorTo: pink
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # ✦ CreatorKit
 
 Plataforma local para criadores de conteúdo. Transcreve vídeos e gera caption, thread, post de blog, hooks, ideias, hashtags, bio, roteiro e calendário — tudo processado na própria máquina/servidor, sem API externa.
@@ -35,6 +45,19 @@ docker run -p 5050:5050 creatorkit
 ```
 
 A imagem já inclui `ffmpeg`, `python3` e `yt-dlp`.
+
+## 🤗 Deploy no Hugging Face Spaces (grátis, com transcrição)
+
+O HF Spaces dá **16 GB de RAM grátis**, o suficiente para rodar o Whisper. O projeto já está configurado (cabeçalho no topo deste README + porta `7860` no Dockerfile).
+
+1. Crie uma conta em https://huggingface.co
+2. **New Space** → SDK **Docker** → visibilidade **Public**
+3. Suba o código no repositório do Space:
+   ```bash
+   git remote add space https://huggingface.co/spaces/SEU-USUARIO/creatorkit
+   git push space main
+   ```
+4. O Space builda o `Dockerfile` sozinho. Em alguns minutos fica no ar com transcrição funcionando.
 
 ## ☁️ Deploy em Render / Railway / Fly.io
 
