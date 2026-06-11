@@ -520,11 +520,11 @@ mark{background:#fde68a;border-radius:2px;padding:0 1px}
                 <div class="fld" style="margin-bottom:0">
                   <span class="fld-l">Modelo</span>
                   <select class="sel" id="model-sel">
-                    <option value="Xenova/whisper-tiny">Tiny — rápido</option>
-                    <option value="Xenova/whisper-base">Base</option>
-                    <option value="Xenova/whisper-small" selected>Small ✦</option>
-                    <option value="Xenova/whisper-medium">Medium</option>
-                    <option value="Xenova/whisper-large-v3">Large</option>
+                    <option value="Xenova/whisper-tiny" selected>Tiny — rápido ✦</option>
+                    <option value="Xenova/whisper-base">Base — equilibrado</option>
+                    <option value="Xenova/whisper-small">Small — preciso (lento)</option>
+                    <option value="Xenova/whisper-medium">Medium — muito lento</option>
+                    <option value="Xenova/whisper-large-v3">Large — máxima qualidade</option>
                   </select>
                 </div>
                 <div class="fld" style="margin-bottom:0">
@@ -551,6 +551,7 @@ mark{background:#fde68a;border-radius:2px;padding:0 1px}
                   <div class="step" id="s2"><div class="sc"></div><div class="slb">Transcrever</div></div>
                   <div class="step" id="s3"><div class="sc"></div><div class="slb">Gerar</div></div>
                 </div>
+                <div id="pg-note" style="font-size:12px;color:var(--ink3);text-align:center;margin-top:10px;line-height:1.5"></div>
               </div>
               <div class="errbox" id="errbox"></div>
               <button class="btn pri" id="demo-btn" style="width:100%;margin-top:12px;justify-content:center;padding:10px">▶ Ver demonstração de exemplo</button>
@@ -797,7 +798,8 @@ G('fclr').addEventListener('click',()=>{S.file=null;G('fi').value='';G('fcho').c
 function setFile(f){if(!f)return;S.file=f;G('fname').textContent=`📎 ${f.name} · ${(f.size/1024/1024).toFixed(1)} MB`;G('fcho').classList.add('on');}
 
 const SMAP={downloading_ytdlp:0,downloading:0,extracting:1,transcribing:2,analyzing:3,done:'all'};
-function setSteps(st){const a=SMAP[st];[0,1,2,3].forEach(i=>{const el=G(`s${i}`);el.classList.remove('ac','dn');if(a==='all')el.classList.add('dn');else if(i===a){el.classList.add('ac');for(let j=0;j<i;j++)G(`s${j}`).classList.add('dn');}});}
+const SNOTE={downloading_ytdlp:'Preparando ferramentas...',downloading:'Baixando o vídeo...',extracting:'Extraindo o áudio...',transcribing:'Transcrevendo com IA — pode levar de alguns segundos a minutos conforme a duração e o modelo escolhido. ⏳',analyzing:'Gerando o conteúdo...'};
+function setSteps(st){const a=SMAP[st];[0,1,2,3].forEach(i=>{const el=G(`s${i}`);el.classList.remove('ac','dn');if(a==='all')el.classList.add('dn');else if(i===a){el.classList.add('ac');for(let j=0;j<i;j++)G(`s${j}`).classList.add('dn');}});const n=G('pg-note');if(n)n.textContent=SNOTE[st]||'';}
 
 G('proc-btn').addEventListener('click',startProc);
 G('url-inp').addEventListener('keydown',e=>{if(e.key==='Enter')startProc();});

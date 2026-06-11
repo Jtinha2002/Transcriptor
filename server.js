@@ -18,6 +18,8 @@ const UPLOADS_DIR   = path.join(__dirname, 'uploads');
 const YTDLP_PATH    = process.env.YTDLP_PATH ||
   path.join(__dirname, 'bin', IS_WIN ? 'yt-dlp.exe' : 'yt-dlp');
 const JOB_TTL_MS    = 60 * 60 * 1000; // 1h: jobs e arquivos temporários expiram
+const DL_TIMEOUT_MS = 3 * 60 * 1000;  // 3min: timeout do download (yt-dlp)
+const TR_TIMEOUT_MS = 10 * 60 * 1000; // 10min: timeout da transcrição (Whisper)
 
 [DOWNLOADS_DIR, UPLOADS_DIR, path.join(__dirname, 'bin')].forEach(d => fs.mkdirSync(d, { recursive: true }));
 
@@ -94,9 +96,43 @@ async function ensureYtDlp() {
   return ytdlpReady;
 }
 
+/** Traduz erros comuns do yt-dlp para mensagens claras */
+function cleanYtDlpError(stderr = '') {
+  const s = stderr.toLowerCase();
+  if (s.includes('login required') || s.includes('log in') || s.includes('rate-limit') || s.includes('cookies'))
+    return 'Esse vídeo exige login (comum em contas privadas ou Instagram). Tente um link público.';
+  if (s.includes('private'))      return 'Esse vídeo é privado e não pode ser baixado.';
+  if (s.includes('unavailable') || s.includes('not available') || s.includes('removed'))
+    return 'Vídeo indisponível ou removido.';
+  if (s.includes('unsupported url') || s.includes('no video') || s.includes('unable to extract'))
+    return 'Não foi possível ler esse link. Verifique se é um link de vídeo válido.';
+  if (s.includes('404'))          return 'Vídeo não encontrado (404).';
+  return 'Não foi possível baixar o vídeo. O link pode estar protegido ou indisponível.';
+}
+
+/** Roda o yt-dlp via spawn com timeout e kill garantido. `capture` retorna o stdout. */
+function runYtDlp(args, { timeoutMs = DL_TIMEOUT_MS, capture = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(YTDLP_PATH, args, { stdio: ['ignore', capture ? 'pipe' : 'ignore', 'pipe'] });
+    let out = '', err = '', settled = false, timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; try { child.kill('SIGKILL'); } catch {} }, timeoutMs);
+    if (capture && child.stdout) child.stdout.on('data', d => { out += d.toString(); });
+    child.stderr.on('data', d => { err += d.toString(); });
+    child.on('close', code => {
+      if (settled) return; settled = true; clearTimeout(timer);
+      if (timedOut) return reject(new Error('A operação demorou demais e foi cancelada. Tente um vídeo mais curto.'));
+      if (code !== 0) return reject(new Error(cleanYtDlpError(err)));
+      resolve(out);
+    });
+    child.on('error', e => { if (!settled) { settled = true; clearTimeout(timer); reject(e); } });
+  });
+}
+
+// Flags que fazem o yt-dlp falhar rápido em vez de ficar tentando pra sempre
+const YTDLP_BASE = ['--no-playlist', '--no-warnings', '--socket-timeout', '20', '--retries', '2', '--extractor-retries', '1'];
+
 async function getVideoInfo(url) {
-  const ytdlp = new YTDlpWrap(YTDLP_PATH);
-  const raw = await ytdlp.execPromise([url, '--dump-json', '--no-playlist', '--quiet']);
+  const raw = await runYtDlp([url, '--dump-json', ...YTDLP_BASE], { capture: true, timeoutMs: 45000 });
   const info = JSON.parse(raw);
   return {
     title:     info.title     || '',
@@ -124,10 +160,9 @@ function convertToMp3(inputFile, outMp3, deleteInput = false, hq = false) {
 async function downloadAudioFromUrl(jobId, url, setStatus = () => {}) {
   const outMp3 = path.join(DOWNLOADS_DIR, `${jobId}.mp3`);
   const tmpOut = path.join(DOWNLOADS_DIR, `${jobId}.%(ext)s`);
-  const ytdlp  = new YTDlpWrap(YTDLP_PATH);
-  await ytdlp.execPromise([url, '--format', 'bestaudio/best', '--output', tmpOut, '--no-playlist', '--quiet']);
+  await runYtDlp([url, '--format', 'bestaudio/best', '--output', tmpOut, ...YTDLP_BASE]);
   const files = fs.readdirSync(DOWNLOADS_DIR).filter(f => f.startsWith(jobId) && !f.endsWith('.mp3'));
-  if (!files.length) throw new Error('Não foi possível baixar o vídeo. Verifique o link.');
+  if (!files.length) throw new Error('Não foi possível baixar o áudio desse vídeo.');
   setStatus('extracting');
   await convertToMp3(path.join(DOWNLOADS_DIR, files[0]), outMp3, true);
   return outMp3;
@@ -138,16 +173,18 @@ function transcribeAudio(mp3Path, modelName, language, task = 'transcribe') {
   return new Promise((resolve, reject) => {
     const worker = path.join(__dirname, 'whisper_worker.js');
     const child = spawn(process.execPath, [worker, mp3Path, modelName, language, task], { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '', settled = false;
+    let stdout = '', stderr = '', settled = false, timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; try { child.kill('SIGKILL'); } catch {} }, TR_TIMEOUT_MS);
     child.stdout.on('data', d => { stdout += d.toString(); });
     child.stderr.on('data', d => { const l = d.toString().trim(); if (l) { stderr += l + '\n'; console.log('[worker]', l); } });
     child.on('close', code => {
-      if (settled) return; settled = true;
-      if (code !== 0) return reject(new Error(stderr.split('\n').filter(Boolean).pop() || `Worker saiu com código ${code}`));
+      if (settled) return; settled = true; clearTimeout(timer);
+      if (timedOut) return reject(new Error('A transcrição demorou demais. Tente um vídeo mais curto ou o modelo "Tiny".'));
+      if (code !== 0) return reject(new Error('Falha ao transcrever o áudio.'));
       try { resolve(JSON.parse(stdout.trim())); }
       catch { reject(new Error('Resposta inválida do transcritor.')); }
     });
-    child.on('error', err => { if (!settled) { settled = true; reject(err); } });
+    child.on('error', err => { if (!settled) { settled = true; clearTimeout(timer); reject(err); } });
   });
 }
 
@@ -243,16 +280,15 @@ app.post('/download-video', async (req, res) => {
     await ensureYtDlp();
     const id = randomUUID();
     const out = path.join(DOWNLOADS_DIR, `${id}.%(ext)s`);
-    const ytdlp = new YTDlpWrap(YTDLP_PATH);
-    await ytdlp.execPromise([url,
+    await runYtDlp([url,
       '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
       '--merge-output-format', 'mp4',
       '--ffmpeg-location', ffmpegStatic,
-      '--output', out, '--no-playlist', '--quiet']);
+      '--output', out, ...YTDLP_BASE]);
     const files = fs.readdirSync(DOWNLOADS_DIR).filter(f => f.startsWith(id));
     if (!files.length) return res.status(500).json({ error: 'Falha ao baixar vídeo.' });
     streamAndCleanup(res, path.join(DOWNLOADS_DIR, files[0]), 'video.mp4', 'video/mp4');
-  } catch (e) { res.status(500).json({ error: 'Falha ao baixar vídeo. Pode estar protegido ou indisponível.' }); }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/download-audio', async (req, res) => {
@@ -263,13 +299,12 @@ app.post('/download-audio', async (req, res) => {
     const id = randomUUID();
     const mp3Out = path.join(DOWNLOADS_DIR, `${id}.mp3`);
     const tmpOut = path.join(DOWNLOADS_DIR, `${id}.%(ext)s`);
-    const ytdlp = new YTDlpWrap(YTDLP_PATH);
-    await ytdlp.execPromise([url, '--format', 'bestaudio/best', '--output', tmpOut, '--no-playlist', '--quiet']);
+    await runYtDlp([url, '--format', 'bestaudio/best', '--output', tmpOut, ...YTDLP_BASE]);
     const files = fs.readdirSync(DOWNLOADS_DIR).filter(f => f.startsWith(id) && !f.endsWith('.mp3'));
     if (!files.length) return res.status(500).json({ error: 'Falha ao baixar áudio.' });
     await convertToMp3(path.join(DOWNLOADS_DIR, files[0]), mp3Out, true, true);
     streamAndCleanup(res, mp3Out, 'audio.mp3', 'audio/mpeg');
-  } catch (e) { res.status(500).json({ error: 'Falha ao baixar áudio.' }); }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Handler global de erros (ex.: arquivo grande demais no multer)
