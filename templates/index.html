@@ -543,6 +543,7 @@ mark{background:#fde68a;border-radius:2px;padding:0 1px}
                   <div class="itab" data-task="translate">🌍 Traduzir → EN</div>
                 </div>
               </div>
+              <div id="transc-off" class="hint" style="display:none;background:#fff7ed;border-color:#fed7aa;color:#9a3412">⚠️ <b>Transcrição indisponível neste servidor</b> (memória limitada do plano gratuito). As demais ferramentas funcionam normalmente. Para transcrever vídeos, rode o app no seu computador.</div>
               <button class="run-btn" id="proc-btn" style="margin-top:16px">⚡ Processar vídeo</button>
               <div class="pg" id="pg">
                 <div class="steps">
@@ -952,6 +953,18 @@ G('cal-btn').addEventListener('click',async()=>{
     G('cal-cpy').onclick=()=>cpTxt(d.plan.map(p=>`${p.day}: ${p.theme} [${p.fmt}] — ${p.best}`).join('\n'),G('cal-cpy'),'📋 Copiar');
   }catch(e){alert(e.message);}b.disabled=false;b.textContent='📅 Gerar calendário';
 });
+
+// ════════════════════ CONFIG (transcrição on/off) ════════════════════
+(async()=>{
+  try{
+    const cfg=await(await fetch('/config')).json();
+    if(cfg && cfg.transcription===false){
+      G('transc-off').style.display='block';
+      const pb=G('proc-btn'); pb.disabled=true; pb.textContent='Transcrição indisponível neste servidor';
+      G('demo-btn').style.display='none';
+    }
+  }catch{}
+})();
 </script>
 </body>
 </html>

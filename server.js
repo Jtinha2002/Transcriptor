@@ -21,6 +21,12 @@ const JOB_TTL_MS    = 60 * 60 * 1000; // 1h: jobs e arquivos temporários expira
 const DL_TIMEOUT_MS = 3 * 60 * 1000;  // 3min: timeout do download (yt-dlp)
 const TR_TIMEOUT_MS = 10 * 60 * 1000; // 10min: timeout da transcrição (Whisper)
 
+// Transcrição é pesada de memória (Whisper). Em instâncias pequenas (ex.: Render
+// free, 512MB) pode estourar a RAM. Permite desligar o recurso e limitar a 1 por vez.
+const ENABLE_TRANSCRIPTION = process.env.ENABLE_TRANSCRIPTION !== 'false';
+const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT || 1);
+let activeJobs = 0;
+
 [DOWNLOADS_DIR, UPLOADS_DIR, path.join(__dirname, 'bin')].forEach(d => fs.mkdirSync(d, { recursive: true }));
 
 // ── App ───────────────────────────────────────────────────────
@@ -198,7 +204,7 @@ async function runUrlJob(jobId, url, model, language, task) {
     jobs[jobId].status = 'transcribing';
     finishJob(jobId, await transcribeAudio(mp3, model, language, task));
   } catch (e) { failJob(jobId, e.message); }
-  finally { if (mp3 && fs.existsSync(mp3)) fs.unlink(mp3, () => {}); }
+  finally { activeJobs--; if (mp3 && fs.existsSync(mp3)) fs.unlink(mp3, () => {}); }
 }
 
 async function runFileJob(jobId, filePath, model, language, task) {
@@ -212,12 +218,26 @@ async function runFileJob(jobId, filePath, model, language, task) {
   } catch (e) {
     failJob(jobId, e.message);
     if (filePath && fs.existsSync(filePath)) fs.unlink(filePath, () => {});
-  } finally { if (mp3 && fs.existsSync(mp3)) fs.unlink(mp3, () => {}); }
+  } finally { activeJobs--; if (mp3 && fs.existsSync(mp3)) fs.unlink(mp3, () => {}); }
+}
+
+/** Verifica se dá pra aceitar uma nova transcrição agora */
+function transcriptionGate(res) {
+  if (!ENABLE_TRANSCRIPTION) {
+    res.status(503).json({ error: 'A transcrição de vídeo está desativada neste servidor (memória limitada). As outras ferramentas funcionam normalmente — para transcrever, rode o app localmente.' });
+    return false;
+  }
+  if (activeJobs >= MAX_CONCURRENT) {
+    res.status(429).json({ error: 'O servidor já está transcrevendo outro vídeo. Aguarde alguns instantes e tente novamente.' });
+    return false;
+  }
+  return true;
 }
 
 // ── Routes ────────────────────────────────────────────────────
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'templates', 'index.html')));
 app.get('/health', (req, res) => res.json({ ok: true, uptime: process.uptime() }));
+app.get('/config', (req, res) => res.json({ transcription: ENABLE_TRANSCRIPTION }));
 
 app.post('/info', async (req, res) => {
   const { url } = req.body;
@@ -227,8 +247,10 @@ app.post('/info', async (req, res) => {
 });
 
 app.post('/transcribe', (req, res) => {
-  const { url, model = 'Xenova/whisper-small', language = 'auto', task = 'transcribe' } = req.body;
+  const { url, model = 'Xenova/whisper-tiny', language = 'auto', task = 'transcribe' } = req.body;
   if (!url) return res.status(400).json({ error: 'URL não informada' });
+  if (!transcriptionGate(res)) return;
+  activeJobs++;
   const jobId = newJob();
   runUrlJob(jobId, url, model, language, task);
   res.json({ job_id: jobId });
@@ -236,7 +258,9 @@ app.post('/transcribe', (req, res) => {
 
 app.post('/transcribe-file', upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
-  const { model = 'Xenova/whisper-small', language = 'auto', task = 'transcribe' } = req.body;
+  if (!transcriptionGate(res)) { fs.unlink(req.file.path, () => {}); return; }
+  activeJobs++;
+  const { model = 'Xenova/whisper-tiny', language = 'auto', task = 'transcribe' } = req.body;
   const jobId = newJob();
   runFileJob(jobId, req.file.path, model, language, task);
   res.json({ job_id: jobId });
